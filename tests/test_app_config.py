@@ -1,59 +1,68 @@
 from __future__ import annotations
 
-import ast
-import os
+import sys
+import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
-
 
 ROOT = Path(__file__).resolve().parents[1]
-FakePathBase = type(Path())
+sys.path.insert(0, str(ROOT))
+import model_paths
+from model_paths import MODEL_FOLDER, resolve_model_path
 
 
-class FakePath(FakePathBase):
-    @classmethod
-    def home(cls):
-        return cls("/tmp/fake-home")
+class ModelPathTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name).resolve() / "home"
+        self.home.mkdir()
+        self.pointer = self.home / "no-pointer-file"
 
+    def resolve(self, environ=None):
+        return resolve_model_path(environ or {}, self.home, self.pointer)
 
-def load_path_config(environ: dict[str, str] | None = None, *, path_class=FakePath, os_module=None):
-    source = ast.parse((ROOT / "app.py").read_text())
-    assignments = [
-        node for node in source.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id in {"DEFAULT_MODEL_PATH", "MODEL_PATH"}
-            for target in node.targets
-        )
-    ]
-    if os_module is None:
-        os_module = SimpleNamespace(environ={} if environ is None else environ)
-    namespace = {"Path": path_class, "os": os_module}
-    exec(compile(ast.Module(body=assignments, type_ignores=[]), "app.py", "exec"), namespace)
-    return namespace["DEFAULT_MODEL_PATH"], namespace["MODEL_PATH"]
+    def test_default_is_own_folder_in_home_models_directory(self):
+        path, source = self.resolve()
+        self.assertEqual(path, self.home / "models" / MODEL_FOLDER)
+        self.assertEqual(source, "default")
+        self.assertEqual(MODEL_FOLDER, "Ternary-Bonsai-2-27B-mlx-2bit")
 
+    def test_models_directory_override(self):
+        path, _ = self.resolve({"BONSAI_MODELS_DIR": str(self.home / "big-disk")})
+        self.assertEqual(path, self.home / "big-disk" / MODEL_FOLDER)
 
-class AppConfigTests(unittest.TestCase):
-    def test_default_model_path_uses_current_home_directory(self):
-        default_model_path, model_path = load_path_config({})
-        expected = FakePath.home() / "projects/ternary-bonsai-2/bonsai2-27b-mlx"
-        self.assertEqual(default_model_path, str(expected))
-        self.assertEqual(model_path, expected.resolve())
+    def test_explicit_model_path_wins_over_everything(self):
+        self.pointer.write_text(str(self.home / "pointed"))
+        override = self.home / "custom-bonsai-model"
+        path, source = self.resolve({
+            "BONSAI_MODEL_PATH": str(override), "BONSAI_MODELS_DIR": str(self.home / "other"),
+        })
+        self.assertEqual((path, source), (override, "BONSAI_MODEL_PATH"))
 
-    def test_environment_override_is_preserved(self):
-        override = "/tmp/custom-bonsai-model"
-        _, model_path = load_path_config({"BONSAI_MODEL_PATH": override})
-        self.assertEqual(model_path, FakePath(override).resolve())
+    def test_explicit_model_path_expands_user_home(self):
+        path, _ = self.resolve({"BONSAI_MODEL_PATH": "~/custom-bonsai-model"})
+        self.assertEqual(path, (Path.home() / "custom-bonsai-model").resolve())
 
-    def test_environment_override_expands_user_home(self):
-        with patch.dict(
-            os.environ,
-            {"HOME": str(FakePath.home()), "BONSAI_MODEL_PATH": "~/custom-bonsai-model"},
-        ):
-            _, model_path = load_path_config(path_class=Path, os_module=os)
-        self.assertEqual(model_path, (FakePath.home() / "custom-bonsai-model").resolve())
+    def test_installer_pointer_is_used(self):
+        self.pointer.write_text(f"{self.home / 'elsewhere' / MODEL_FOLDER}\n")
+        path, source = self.resolve()
+        self.assertEqual((path, source), (self.home / "elsewhere" / MODEL_FOLDER, "installer"))
+
+    def test_empty_pointer_is_ignored(self):
+        self.pointer.write_text("\n")
+        self.assertEqual(self.resolve()[1], "default")
+
+    def test_legacy_location_is_used_only_when_it_is_the_only_copy(self):
+        legacy = self.home / model_paths.LEGACY_MODEL_SUBPATH
+        legacy.mkdir(parents=True)
+        self.assertEqual(self.resolve(), (legacy, "legacy"))
+        (self.home / "models" / MODEL_FOLDER).mkdir(parents=True)
+        self.assertEqual(self.resolve(), (self.home / "models" / MODEL_FOLDER, "default"))
+
+    def test_app_uses_the_shared_resolver(self):
+        source = (ROOT / "app.py").read_text()
+        self.assertIn("MODEL_PATH, MODEL_PATH_SOURCE = resolve_model_path()", source)
 
 
 if __name__ == "__main__":

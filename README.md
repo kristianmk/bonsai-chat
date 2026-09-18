@@ -1,105 +1,152 @@
-# Bonsai Chat: repetition controls
+# Bonsai Chat
 
 Bonsai Chat is a local Flask chat UI for
 `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`, using the model's bundled
 `vision_artifact.load_vl_model` loader and `mlx_vlm.stream_generate`.
-The app does not replace that loader with a generic model loader.
+The app does not replace that loader with a generic model loader. It supports
+text and image input, sampling/repetition controls, and an automatic loop guard.
 
-## Install, download, and run
-
-Stop an old Flask process with Ctrl+C. Extract this project and replace the app
-files, including the new `generation_controls.py`. Do not overwrite an existing
-model folder.
-
-Create and activate a virtual environment **before** installing this project's
-requirements. Run the commands from the repository root:
+## Install and run
 
 ```bash
 cd bonsai-chat
+./install.sh
+./run.sh
+```
+
+`install.sh` is safe to re-run. It:
+
+1. creates `.venv` (Python 3.10 or newer) and installs `requirements.txt`;
+2. downloads the model pack (about 8.6 GB) from Hugging Face into its own
+   folder inside a shared models directory:
+   `~/models/Ternary-Bonsai-2-27B-mlx-2bit`;
+3. verifies every file against the SHA-256 manifest (`files.json`) shipped in
+   the pack;
+4. installs the pack's pinned `runtime/requirements.txt` into `.venv`.
+
+The model is no longer expected inside a project directory. An interrupted
+download can be resumed by running `./install.sh` again; complete files are
+skipped.
+
+| Option | Effect |
+|---|---|
+| `--models-dir DIR` | Use `DIR` instead of `~/models`. The pack still gets its own `Ternary-Bonsai-2-27B-mlx-2bit` folder inside it. `BONSAI_MODELS_DIR` sets the same default. |
+| `--move-from DIR` | Move an already downloaded pack into the models directory instead of downloading it again. |
+| `--download` | Download a new copy even though a pack exists at the old location (see below). |
+| `--no-verify` | Skip checksum verification. |
+| `--skip-runtime-deps` | Do not install the pack's `runtime/requirements.txt`. |
+| `--mlx-backend NAME` | Linux only: `cpu` (default), `cuda12` or `cuda13`. |
+| `--python PATH` | Python used to create `.venv` (default `python3`). |
+
+If Hugging Face prompts for access, sign in, create a read token, and run
+`.venv/bin/hf auth login` before re-running the installer.
+
+### Upgrading from the old model location
+
+Earlier versions of this README kept the model at
+`~/projects/ternary-bonsai-2/bonsai2-27b-mlx`. If that folder exists and the
+new one does not, the installer stops and asks you to choose. To reuse the copy
+you already have (a rename on the same disk, no download):
+
+```bash
+./install.sh --move-from ~/projects/ternary-bonsai-2/bonsai2-27b-mlx
+```
+
+Until you do, the app keeps working: it falls back to the old location when it
+is the only copy.
+
+### How the app finds the model
+
+In this order:
+
+1. `BONSAI_MODEL_PATH`, the full path to a model folder;
+2. `.bonsai-model-path`, written by `install.sh` when `--models-dir` or
+   `BONSAI_MODELS_DIR` selected a non-default models directory;
+3. `$BONSAI_MODELS_DIR/Ternary-Bonsai-2-27B-mlx-2bit`, default
+   `~/models/Ternary-Bonsai-2-27B-mlx-2bit`;
+4. the old `~/projects/ternary-bonsai-2/bonsai2-27b-mlx`, only if 3 does not
+   exist.
+
+The chosen path and its source are logged at startup. An alternative model path
+or port can be supplied explicitly:
+
+```bash
+BONSAI_MODEL_PATH="/path/to/model-folder" PORT=5050 ./run.sh
+```
+
+### Platforms
+
+The target is macOS on Apple Silicon (MLX with Metal). On Linux the installer
+additionally installs a compute backend for the pinned MLX version
+(`mlx[cpu]` unless `--mlx-backend` says otherwise), because the plain Linux
+`mlx` wheel ships without one. Windows is not supported by MLX; the PowerShell
+note in earlier READMEs is withdrawn.
+
+### Manual installation
+
+The installer only automates these steps:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-The activation command above is for macOS/Linux. In PowerShell on Windows, use
-`.venv\Scripts\Activate.ps1` instead. Activate this environment again with
-`source .venv/bin/activate` whenever opening a new macOS/Linux terminal.
-
-### Download the Bonsai model with Hugging Face
-
-The model is hosted on Hugging Face at
-`prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`. The `hf` command is provided by the
-`huggingface_hub` package, so install it in the active virtual environment:
-
-```bash
-python -m pip install --upgrade huggingface_hub
-hf --help
-```
-
-Choose a directory for the complete model pack, then download it there. The
-model is about 8.6 GB on disk, so ensure the destination has adequate free
-space. This example keeps models outside the app repository:
-
-```bash
-MODEL_DIR="$HOME/projects/ternary-bonsai-2/bonsai2-27b-mlx"
-mkdir -p "$(dirname "$MODEL_DIR")"
-hf download prism-ml/Ternary-Bonsai-2-27B-mlx-2bit --local-dir "$MODEL_DIR"
-```
-
-`hf download` downloads the entire Hugging Face model repository, including the
-bundled `runtime/` loader required by this app. If Hugging Face prompts for
-access, create or sign in to a Hugging Face account, create a read token, and
-run `hf auth login` before retrying the download.
-
-Install the model pack's runtime dependencies into the same active virtual
-environment, then start the app while pointing it at the directory chosen
-above:
-
-```bash
+python -m pip install -r requirements.txt huggingface_hub
+python install_model.py                  # download + verify into ~/models
+MODEL_DIR="$(python install_model.py --print-path)"
 python -m pip install -r "$MODEL_DIR/runtime/requirements.txt"
-BONSAI_MODEL_PATH="$MODEL_DIR" python app.py
-```
-
-The project's `requirements.txt` contains the app's UI/formatting dependencies.
-The model pack's `runtime/requirements.txt` supplies its MLX runtime
-dependencies; do not replace it with a generic model loader or blindly upgrade
-the MLX stack.
-
-By default, the app looks for the model directory at:
-
-```text
-$HOME/projects/ternary-bonsai-2/bonsai2-27b-mlx
-```
-
-Set `BONSAI_MODEL_PATH` if you keep the model somewhere else. If the model is
-already installed at that default location on your macOS/Linux machine,
-activation, app dependency installation, and startup are enough:
-
-```bash
-cd bonsai-chat
-source .venv/bin/activate
-python -m pip install -r requirements.txt
 python app.py
 ```
 
-An alternative model path or port can be supplied explicitly:
-
-```bash
-BONSAI_MODEL_PATH="/path/to/bonsai2-27b-mlx" PORT=5050 python app.py
-```
+`python install_model.py --verify-only` re-checks an installed pack at any
+time. The project's `requirements.txt` contains the app's own dependencies
+(UI, formatting, and Pillow for image decoding). The model pack's
+`runtime/requirements.txt` pins its MLX runtime; do not replace it with a
+generic model loader or blindly upgrade the MLX stack. The app never modifies
+files inside the model folder.
 
 Open `http://127.0.0.1:5000` and refresh the page. The server starts immediately;
 the model is loaded once in a loader thread. Wait for **Ready**.
-
-No additional Python dependency was introduced for repetition controls. The
-requirements file contains the existing UI/formatting dependencies only, not an
-upgrade of your MLX, MLX-VLM, or Transformers installation.
 
 Chat history still uses `bonsai-chat-v1` in browser localStorage. Keep the same
 browser and origin (including hostname and port) to access existing chats.
 Sampling settings use a new v2 key and initially select **Bonsai Instruct**; the
 old optional system prompt is retained. Old settings are not deleted.
+
+## Images
+
+Bonsai 2 is a vision-language model and the pack's loader builds the vision
+tower, so the chat accepts images. Use the image button in the composer, paste
+an image from the clipboard, or drop files onto the composer. Up to 4 images
+per message; PNG, JPEG, WebP and GIF (first frame). An image can be sent with
+or without text.
+
+How it works:
+
+- **Downscaling in the browser.** Images are resized to the *Attached image
+  size* setting (longest edge, default 1280 px) before they are stored or sent.
+  Every 32x32 pixel block becomes about one prompt token, so a 1280x960 image
+  adds roughly 1,200 tokens. The app does not cache prompts between requests,
+  so that cost is paid again on every turn of the conversation. Choose 768 px
+  for speed, 2048 px for fine detail such as small text.
+- **Storage.** Image data is kept in the browser's IndexedDB
+  (`bonsai-chat-images`); the chat history in localStorage only holds a small
+  reference. Deleting a chat deletes its images. If browser storage is cleared,
+  the chat shows a placeholder and the image is no longer sent.
+- **Correct turn placement.** `mlx_vlm`'s `apply_chat_template` puts every
+  image token on the *last* user message. For follow-up questions that would
+  detach images from the turn they belong to, so when a conversation contains
+  images the app formats each turn with `get_message_json` and then calls
+  `get_chat_template`. Text-only conversations use `apply_chat_template`
+  exactly as before; both paths were checked to produce identical prompts for
+  text-only input.
+- **Limits.** At most 8 images per request. In longer conversations the newest
+  8 are sent and the reply carries a notice saying how many were left out.
+- **Server-side validation.** The server accepts only base64 `data:` URIs,
+  decodes them with Pillow, checks format, byte size (8 MB) and pixel count,
+  applies EXIF rotation, flattens transparency onto white, and caps the longest
+  edge at 2048 px. URLs and file paths are rejected: `mlx_vlm` would otherwise
+  fetch them from the server side. The model receives PIL images only.
+
+The response statistics show how many images were in the prompt.
 
 ## Start here when output loops
 
@@ -218,29 +265,55 @@ not executed by this app.
 
 ## Tests and limitations
 
-Run the dependency-free logic tests with:
+Run the logic tests with:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-There are 28 tests covering parameter validation, unsupported controls,
+There are 55 tests covering parameter validation, unsupported controls,
 repetition detection, the reported ODE45 comment loop, normal repeated code
-tokens, stream cleanup, cancellation, finish reasons, and request ownership.
-The runtime tests execute the actual `BonsaiRuntime` class extracted from the
-app source with a fake token stream. They do not import or run MLX/Flask.
+tokens, stream cleanup, cancellation, finish reasons, request ownership, model
+path resolution, the installer (download target, checksum verification, the
+`--move-from` upgrade path, refusal to overwrite), image decoding and limits,
+and per-turn image placement. The runtime tests execute the actual
+`BonsaiRuntime` class extracted from the app source with a fake token stream.
+They do not import or run MLX/Flask. The image tests need Pillow and are
+skipped without it; everything else is standard library only.
 
-Python compilation and JavaScript syntax checks also passed. Additional
-Chromium checks used in-memory mocked API responses to test profiles, outgoing
-parameters, loop notices, context exclusion, stop requests, storage writes, and
-mobile layout. These are not live Flask or model-inference tests. This build
-has not been tested with your model weights on Apple Silicon.
+What was additionally checked for this release, on Ubuntu (aarch64, CPU only):
+
+- `./install.sh` was run for real: it created `.venv`, downloaded the 8.6 GB
+  pack into `~/models/Ternary-Bonsai-2-27B-mlx-2bit`, verified all checksums
+  (the only difference is the pack's own `README.md`, edited upstream after its
+  manifest was written; reported as a warning), and installed the pinned
+  runtime with the MLX CPU backend.
+- `./run.sh` found the model with no environment variables and the bundled
+  loader reached **Ready** in 23 seconds with `vision: true`.
+- The chat API was exercised with the real tokenizer, chat template and image
+  processor and only the 27B forward pass replaced by a stub: images land in
+  the turn they were sent with, arrive as PIL objects, oversized images are
+  capped, and URLs, file paths, SVG, corrupt data and over-limit requests are
+  rejected with HTTP 400.
+- The page was driven in headless Firefox (20 checks): attach, remove, the
+  4-image limit, browser downscaling to the configured size, image-only
+  messages, follow-up turns, IndexedDB storage, restore after reload, and
+  clean-up when a chat is deleted.
+
+Not verified: generation quality and speed with images on Apple Silicon. On
+the CPU-only test machine the MLX CPU backend runs this model on roughly one
+core, and a 25-token prompt had not finished prefill after 23 minutes, so no
+real tokens were generated there. The model is meant for Metal.
+macOS-specific parts of `install.sh` (bash 3.2, Apple's Python) were written
+for but not run on macOS.
 
 ## Local use and privacy
 
 By default the server binds only to `127.0.0.1`. This is a single-user local app,
 not an authenticated service. Model inference and rendering run locally; chat
-history is stored unencrypted in browser storage. The app does not serve a CDN
+history (localStorage) and attached images (IndexedDB) are stored unencrypted
+in the browser. Attached images are sent only to this local server and are not
+written to disk by it. The app does not serve a CDN
 script for formatting. Model/runtime libraries may access their usual download
 services if your local model files are incomplete.
 

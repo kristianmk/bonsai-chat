@@ -22,6 +22,8 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import TextLexer, get_lexer_by_name
 from pygments.util import ClassNotFound
 from generation_controls import GenerationOptions, RepetitionGuard, explicit_parameters, sampling_kwargs
+from image_inputs import decode_message_images
+from model_paths import resolve_model_path
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -29,11 +31,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("bonsai-chat")
 
-DEFAULT_MODEL_PATH = str(Path.home() / "projects/ternary-bonsai-2/bonsai2-27b-mlx")
-MODEL_PATH = Path(os.environ.get("BONSAI_MODEL_PATH", DEFAULT_MODEL_PATH)).expanduser().resolve()
+# BONSAI_MODEL_PATH, then the installer's choice, then ~/models/<model folder>.
+MODEL_PATH, MODEL_PATH_SOURCE = resolve_model_path()
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+# Attached images travel as base64 inside the JSON body.
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 
 
 class BonsaiRuntime:
@@ -51,6 +54,8 @@ class BonsaiRuntime:
 
         self._stream_generate = None
         self._apply_chat_template = None
+        self._get_message_json = None
+        self._get_chat_template = None
 
         self._state_lock = threading.Lock()
         self._generation_lock = threading.Lock()
@@ -79,7 +84,8 @@ class BonsaiRuntime:
         try:
             if not self.model_path.is_dir():
                 raise FileNotFoundError(
-                    f"Model directory does not exist: {self.model_path}"
+                    f"Model directory does not exist: {self.model_path}. "
+                    "Run ./install.sh, or set BONSAI_MODEL_PATH."
                 )
 
             runtime_dir = self.model_path / "runtime"
@@ -103,7 +109,7 @@ class BonsaiRuntime:
                 self.mlx_vlm_version = version("mlx-vlm")
             except PackageNotFoundError:
                 self.mlx_vlm_version = "unknown"
-            from mlx_vlm.prompt_utils import apply_chat_template
+            from mlx_vlm.prompt_utils import apply_chat_template, get_chat_template, get_message_json
 
             log.info("Loading Bonsai model from %s", self.model_path)
             model, processor, config = load_vl_model(self.model_path)
@@ -114,6 +120,8 @@ class BonsaiRuntime:
             self.chat_cfg = chat_config(config)
             self._stream_generate = stream_generate
             self._apply_chat_template = apply_chat_template
+            self._get_message_json = get_message_json
+            self._get_chat_template = get_chat_template
 
             with self._state_lock:
                 self.state = "ready"
@@ -135,6 +143,7 @@ class BonsaiRuntime:
             "error": self.error,
             "model_path": str(self.model_path),
             "model_name": self.model_path.name,
+            "vision": bool((self.config or {}).get("components", {}).get("vision")),
             "loaded_at": self.loaded_at,
             "sampling_supported": sorted(self.sampling_supported),
             "mlx_vlm_version": self.mlx_vlm_version,
@@ -162,6 +171,33 @@ class BonsaiRuntime:
                 self._active_request_id = None
                 self._stop_event = None
 
+    def _build_prompt(
+        self, messages: list[dict[str, str]], images: list[list[Any]], enable_thinking: bool,
+    ) -> Any:
+        if not any(images):
+            return self._apply_chat_template(
+                self.processor, self.chat_cfg, messages,
+                num_images=0,
+                enable_thinking=enable_thinking,
+            )
+        # apply_chat_template() puts every image token on the last user
+        # message. Format each turn separately so an image stays in the turn
+        # it was sent with, in the same order as the flat image list.
+        assert self._get_message_json is not None
+        assert self._get_chat_template is not None
+        model_type = self.chat_cfg["model_type"]
+        formatted = [
+            self._get_message_json(
+                model_type, message["content"], message["role"],
+                skip_image_token=not group, num_images=len(group),
+                enable_thinking=enable_thinking,
+            )
+            for message, group in zip(messages, images)
+        ]
+        return self._get_chat_template(
+            self.processor, formatted, True, enable_thinking=enable_thinking,
+        )
+
     def generate(
         self,
         messages: list[dict[str, str]],
@@ -169,12 +205,20 @@ class BonsaiRuntime:
         options: GenerationOptions,
         request_id: str,
         stop_event: threading.Event,
+        images: list[list[Any]] | None = None,
     ) -> Iterator[dict[str, Any]]:
+        """'images' holds one list of PIL images per entry in 'messages'."""
         if self.state != "ready":
             raise RuntimeError(f"Model is not ready (state={self.state})")
         assert self._apply_chat_template is not None
         assert self._stream_generate is not None
         kwargs = sampling_kwargs(options, self.sampling_supported)
+        images = images if images is not None else [[] for _ in messages]
+        if len(images) != len(messages):
+            raise ValueError("'images' must have one entry per message")
+        flat_images = [image for group in images for image in group]
+        if flat_images:
+            kwargs["image"] = flat_images
 
         # Keep templating and generation together: the processor is shared.
         with self._generation_lock:
@@ -187,11 +231,7 @@ class BonsaiRuntime:
             notice = None
             try:
                 if not stop_event.is_set():
-                    prompt = self._apply_chat_template(
-                        self.processor, self.chat_cfg, messages,
-                        num_images=0,
-                        enable_thinking=options.enable_thinking,
-                    )
+                    prompt = self._build_prompt(messages, images, options.enable_thinking)
                     stream = self._stream_generate(
                         self.model, self.processor, prompt=prompt, **kwargs,
                     )
@@ -255,6 +295,7 @@ class BonsaiRuntime:
                 "peak_memory_gb": metric("peak_memory", 3),
                 "finish_reason": reason,
                 "characters": len(generated_text),
+                "images": len(flat_images),
             }
             yield {
                 "type": "done", "stats": stats, "notice": notice,
@@ -620,13 +661,18 @@ def render_assistant_html(text: str) -> str:
     return rendered
 
 
-def _clean_messages(raw_messages: Any, system_prompt: str = "") -> list[dict[str, str]]:
+def _clean_messages(
+    raw_messages: Any, system_prompt: str = "",
+) -> tuple[list[dict[str, str]], list[list[Any]]]:
+    """Return the prompt messages and, aligned with them, each message's images."""
     if not isinstance(raw_messages, list):
         raise ValueError("'messages' must be an array")
 
     messages: list[dict[str, str]] = []
+    images: list[list[Any]] = []
     if system_prompt.strip():
         messages.append({"role": "system", "content": system_prompt.strip()})
+        images.append([])
 
     for item in raw_messages[-100:]:
         if not isinstance(item, dict):
@@ -637,9 +683,15 @@ def _clean_messages(raw_messages: Any, system_prompt: str = "") -> list[dict[str
         content = item.get("content")
         if role not in {"user", "assistant", "system"}:
             continue
-        if not isinstance(content, str) or not content.strip():
+        if not isinstance(content, str):
+            continue
+        attached = []
+        if role == "user":
+            attached = decode_message_images(item.get("images"), sum(map(len, images)))
+        if not content.strip() and not attached:
             continue
         messages.append({"role": role, "content": content})
+        images.append(attached)
 
     if not messages or messages[-1]["role"] != "user":
         raise ValueError("The final non-empty message must be from the user")
@@ -648,7 +700,12 @@ def _clean_messages(raw_messages: Any, system_prompt: str = "") -> list[dict[str
     if total_chars > 500_000:
         raise ValueError("Conversation is too large; start a new chat or trim older messages")
 
-    return messages
+    return messages, images
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return jsonify({"error": "Request is too large. Remove some images or start a new chat."}), 413
 
 
 @app.get("/")
@@ -707,7 +764,7 @@ def api_chat():
         system_prompt = data.get("system_prompt", "")
         if not isinstance(system_prompt, str):
             raise ValueError("'system_prompt' must be a string")
-        messages = _clean_messages(data.get("messages"), system_prompt)
+        messages, images = _clean_messages(data.get("messages"), system_prompt)
         request_id = data.get("request_id")
         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", request_id):
             raise ValueError("A unique 'request_id' of 8-80 letters, numbers, '-' or '_' is required")
@@ -724,6 +781,7 @@ def api_chat():
     def event_stream():
         generator = runtime.generate(
             messages, options=options, request_id=request_id, stop_event=stop_event,
+            images=images,
         )
         try:
             for event in generator:
@@ -752,6 +810,7 @@ def api_chat():
 
 
 if __name__ == "__main__":
+    log.info("Model path (%s): %s", MODEL_PATH_SOURCE, MODEL_PATH)
     runtime.start_loading()
 
     host = os.environ.get("HOST", "127.0.0.1")

@@ -130,6 +130,65 @@ class RuntimeTests(unittest.TestCase):
         self.runtime.finish_request("one-request")
         self.assertTrue(self.runtime.status()["busy"])
 
+    def generate_with_images(self, messages, images):
+        formatted = []
+
+        def message_json(model_type, content, role, **kwargs):
+            formatted.append((model_type, role, content, kwargs))
+            return {"role": role, "content": content, "images": kwargs["num_images"]}
+
+        def chat_template(processor, messages, add_generation_prompt, **kwargs):
+            self.template_call = (messages, add_generation_prompt, kwargs)
+            return "image prompt"
+
+        self.runtime.chat_cfg = {"model_type": "qwen3_5"}
+        self.runtime._get_message_json = message_json
+        self.runtime._get_chat_template = chat_template
+        event = self.runtime.begin_request("test-request-123")
+        events = list(self.runtime.generate(
+            messages, options=GenerationOptions(enable_thinking=True),
+            request_id="test-request-123", stop_event=event, images=images,
+        ))
+        return formatted, events
+
+    def test_images_stay_in_the_turn_they_were_sent_with(self):
+        first, second, third = object(), object(), object()
+        messages = [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "What is this?"},
+            {"role": "assistant", "content": "A cat."},
+            {"role": "user", "content": "And these two?"},
+        ]
+        formatted, events = self.generate_with_images(messages, [[], [first], [], [second, third]])
+
+        # The text-only helper would put all three image tokens on the last turn.
+        self.assertIsNone(self.prompt_kwargs)
+        self.assertEqual([item[3]["num_images"] for item in formatted], [0, 1, 0, 2])
+        self.assertEqual([item[3]["skip_image_token"] for item in formatted], [True, False, True, False])
+        self.assertTrue(all(item[0] == "qwen3_5" and item[3]["enable_thinking"] for item in formatted))
+        template_messages, add_generation_prompt, template_kwargs = self.template_call
+        self.assertEqual(len(template_messages), 4)
+        self.assertTrue(add_generation_prompt)
+        self.assertTrue(template_kwargs["enable_thinking"])
+        # Images reach the generator as PIL objects, in conversation order.
+        self.assertEqual(self.stream_kwargs["image"], [first, second, third])
+        self.assertEqual(self.stream_kwargs["prompt"], "image prompt")
+        self.assertEqual(events[-1]["stats"]["images"], 3)
+
+    def test_text_only_requests_keep_the_original_prompt_path(self):
+        events = list(self.generate())
+        self.assertEqual(self.prompt_kwargs["num_images"], 0)
+        self.assertNotIn("image", self.stream_kwargs)
+        self.assertEqual(events[-1]["stats"]["images"], 0)
+
+    def test_image_list_must_match_messages(self):
+        event = self.runtime.begin_request("test-request-123")
+        with self.assertRaises(ValueError):
+            list(self.runtime.generate(
+                [{"role": "user", "content": "Hello"}], options=GenerationOptions(),
+                request_id="test-request-123", stop_event=event, images=[[], []],
+            ))
+
     def test_token_limit_is_visible(self):
         self.finish_reason = "length"
         events = list(self.generate())

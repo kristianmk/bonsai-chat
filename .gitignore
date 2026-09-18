@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Written by install.sh when a non-default models directory is chosen.
+.bonsai-model-path
+
+# Never commit model weights, even if --models-dir points inside the repo.
+models/

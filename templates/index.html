@@ -153,6 +153,31 @@
       overflow-wrap: anywhere;
       line-height: 1.55;
     }
+    .user-stack {
+      max-width: min(75%, 620px);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+    }
+    .user-stack .bubble-user { max-width: 100%; }
+    .user-images { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .user-images img {
+      display: block;
+      max-width: 220px;
+      max-height: 220px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      cursor: zoom-in;
+    }
+    .user-images img.expanded { max-width: 100%; max-height: none; cursor: zoom-out; }
+    .image-missing {
+      border: 1px dashed #555;
+      border-radius: 12px;
+      padding: 18px 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .assistant-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 13px; align-items: start; }
     .avatar {
       width: 30px;
@@ -380,6 +405,48 @@
       padding: 1px 0 8px;
     }
     textarea::placeholder { color: #969696; }
+    .composer.dragover { border-color: var(--accent); }
+    .attachments { display: none; flex-wrap: wrap; gap: 8px; padding: 2px 0 10px; }
+    .attachments.show { display: flex; }
+    .attachment {
+      position: relative;
+      width: 64px;
+      height: 64px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #4a4a4a;
+    }
+    .attachment img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .attachment button {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, .72);
+      color: #fff;
+      font-size: 13px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .composer-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .attach-btn {
+      flex: none;
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #4a4a4a;
+      border-radius: 999px;
+      background: transparent;
+      color: #cfcfcf;
+      cursor: pointer;
+    }
+    .attach-btn:hover:not(:disabled) { background: var(--surface-hover); }
+    .attach-btn:disabled { opacity: .4; cursor: not-allowed; }
     .composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     .hint { color: #8e8e8e; font-size: 11px; }
     .send {
@@ -470,7 +537,7 @@
       .composer-wrap { left: 0; }
       .messages { width: min(100% - 24px, 820px); }
       .suggestions { grid-template-columns: 1fr; }
-      .bubble-user { max-width: 88%; }
+      .bubble-user, .user-stack { max-width: 88%; }
       .model-name { max-width: 55vw; }
     }
   </style>
@@ -508,10 +575,17 @@
       </section>
 
       <div class="composer-wrap">
-        <div class="composer">
+        <div class="composer" id="composer">
+          <div class="attachments" id="attachments" aria-label="Attached images"></div>
           <textarea id="prompt" rows="1" placeholder="Message Bonsai…" aria-label="Message"></textarea>
           <div class="composer-actions">
-            <span class="hint" id="composerHint">Enter to send · Shift+Enter for newline</span>
+            <div class="composer-left">
+              <button class="attach-btn" id="attachBtn" type="button" aria-label="Attach images" title="Attach images (or paste / drop them here)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+              </button>
+              <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+              <span class="hint" id="composerHint">Enter to send · Shift+Enter for newline</span>
+            </div>
             <button class="send" id="sendBtn" aria-label="Send message">↑</button>
           </div>
         </div>
@@ -588,6 +662,18 @@
     </div>
 
     <div class="field">
+      <label for="imageMaxEdge">Attached image size (longest edge)</label>
+      <select id="imageMaxEdge">
+        <option value="768">768 px (fastest)</option>
+        <option value="1024">1024 px</option>
+        <option value="1280">1280 px</option>
+        <option value="1568">1568 px</option>
+        <option value="2048">2048 px (slowest, most detail)</option>
+      </select>
+      <p class="field-help">Images are downscaled in the browser before sending. Every 32×32 pixel block costs about one prompt token, so a 1280×960 image adds roughly 1,200 tokens to prefill on every turn.</p>
+    </div>
+
+    <div class="field">
       <label for="systemPrompt"><span>System prompt</span></label>
       <textarea id="systemPrompt" rows="3" placeholder="Optional system instruction"></textarea>
     </div>
@@ -603,8 +689,12 @@
         minP: 0, repetitionPenalty: 1.0, penaltyWindow: 256,
         presencePenalty: 1.5, frequencyPenalty: 0,
         enableThinking: false, loopGuard: true,
-        maxTokens: 2048, systemPrompt: "",
+        maxTokens: 2048, systemPrompt: "", imageMaxEdge: 1280,
       };
+      // Keep in step with image_inputs.py.
+      const MAX_IMAGES_PER_MESSAGE = 4;
+      const MAX_IMAGES_PER_REQUEST = 8;
+      const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
       const PRESETS = {
         instruct: { temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
           presencePenalty: 1.5, repetitionPenalty: 1.0, frequencyPenalty: 0,
@@ -649,6 +739,11 @@
         enableThinking: document.getElementById("enableThinking"),
         loopGuard: document.getElementById("loopGuard"),
         runtimeInfo: document.getElementById("runtimeInfo"),
+        composer: document.getElementById("composer"),
+        attachments: document.getElementById("attachments"),
+        attachBtn: document.getElementById("attachBtn"),
+        imageInput: document.getElementById("imageInput"),
+        imageMaxEdge: document.getElementById("imageMaxEdge"),
       };
 
       let state = loadState();
@@ -658,6 +753,143 @@
       let modelReady = false;
       let activeRequestId = null;
       let stopRequested = false;
+      let pendingImages = [];
+
+      // Image data lives in IndexedDB: localStorage (about 5 MB) holds the chat
+      // text and only a small reference {id, name, width, height} per image.
+      const imageCache = new Map();
+      let imageDbPromise = null;
+
+      function imageDb() {
+        if (!imageDbPromise) {
+          imageDbPromise = new Promise((resolve) => {
+            try {
+              const open = indexedDB.open("bonsai-chat-images", 1);
+              open.onupgradeneeded = () => open.result.createObjectStore("images");
+              open.onsuccess = () => resolve(open.result);
+              open.onerror = () => resolve(null);
+              open.onblocked = () => resolve(null);
+            } catch (_) {
+              resolve(null);
+            }
+          });
+        }
+        return imageDbPromise;
+      }
+
+      async function imageStore(mode, action) {
+        const db = await imageDb();
+        if (!db) return undefined;
+        return new Promise((resolve) => {
+          try {
+            const tx = db.transaction("images", mode);
+            const request = action(tx.objectStore("images"));
+            tx.oncomplete = () => resolve(request ? request.result : undefined);
+            tx.onerror = tx.onabort = () => resolve(undefined);
+          } catch (_) {
+            resolve(undefined);
+          }
+        });
+      }
+
+      async function putImage(id, dataUrl) {
+        imageCache.set(id, dataUrl);
+        await imageStore("readwrite", store => store.put(dataUrl, id));
+      }
+
+      async function getImage(id) {
+        if (imageCache.has(id)) return imageCache.get(id);
+        const dataUrl = await imageStore("readonly", store => store.get(id));
+        if (typeof dataUrl === "string") imageCache.set(id, dataUrl);
+        return typeof dataUrl === "string" ? dataUrl : null;
+      }
+
+      function deleteImages(ids) {
+        if (!ids.length) return;
+        ids.forEach(id => imageCache.delete(id));
+        imageStore("readwrite", store => { ids.forEach(id => store.delete(id)); });
+      }
+
+      function loadBitmap(file) {
+        return new Promise((resolve, reject) => {
+          const url = URL.createObjectURL(file);
+          const img = new Image();
+          img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+          img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`Could not read "${file.name || "image"}".`)); };
+          img.src = url;
+        });
+      }
+
+      // Downscale before storing and sending: prompt cost grows with pixel count.
+      async function prepareImage(file) {
+        if (!IMAGE_TYPES.includes(file.type)) {
+          throw new Error(`"${file.name || "file"}" is not a PNG, JPEG, WebP or GIF image.`);
+        }
+        const img = await loadBitmap(file);
+        const maxEdge = Number(settings.imageMaxEdge) || DEFAULT_SETTINGS.imageMaxEdge;
+        const scale = Math.min(1, maxEdge / Math.max(img.naturalWidth, img.naturalHeight));
+        const width = Math.max(1, Math.round(img.naturalWidth * scale));
+        const height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        const encode = (type, quality) => {
+          if (type === "image/jpeg") {
+            // JPEG has no alpha channel; put transparent areas on white.
+            context.fillStyle = "#fff";
+            context.fillRect(0, 0, width, height);
+          }
+          context.drawImage(img, 0, 0, width, height);
+          return canvas.toDataURL(type, quality);
+        };
+        // PNG keeps screenshots and text sharp; everything else becomes JPEG.
+        let dataUrl = file.type === "image/png" ? encode("image/png") : encode("image/jpeg", 0.9);
+        if (file.type === "image/png" && dataUrl.length > 3_000_000) dataUrl = encode("image/jpeg", 0.9);
+        return { id: uid(), name: file.name || "image", width, height, dataUrl };
+      }
+
+      async function addFiles(files) {
+        const list = Array.from(files || []).filter(file => file.type.startsWith("image/"));
+        if (!list.length || generating) return;
+        setError("");
+        for (const file of list) {
+          if (pendingImages.length >= MAX_IMAGES_PER_MESSAGE) {
+            setError(`At most ${MAX_IMAGES_PER_MESSAGE} images per message.`);
+            break;
+          }
+          try {
+            pendingImages.push(await prepareImage(file));
+          } catch (err) {
+            setError(err.message || String(err));
+          }
+        }
+        renderAttachments();
+      }
+
+      function renderAttachments() {
+        els.attachments.innerHTML = "";
+        els.attachments.classList.toggle("show", pendingImages.length > 0);
+        for (const image of pendingImages) {
+          const item = document.createElement("div");
+          item.className = "attachment";
+          const img = document.createElement("img");
+          img.src = image.dataUrl;
+          img.alt = image.name;
+          img.title = `${image.name} · ${image.width}×${image.height}`;
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "×";
+          remove.setAttribute("aria-label", `Remove ${image.name}`);
+          remove.addEventListener("click", () => {
+            pendingImages = pendingImages.filter(other => other.id !== image.id);
+            renderAttachments();
+          });
+          item.append(img, remove);
+          els.attachments.appendChild(item);
+        }
+        updateSendState();
+      }
 
       function uid() {
         return (crypto.randomUUID && crypto.randomUUID()) ||
@@ -720,6 +952,7 @@
           loopGuard: els.loopGuard.checked,
           maxTokens: Number(els.maxTokens.value),
           systemPrompt: els.systemPrompt.value,
+          imageMaxEdge: Number(els.imageMaxEdge.value),
         };
         try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {}
       }
@@ -734,7 +967,8 @@
       function showSettings() {
         els.samplingPreset.value = settings.preset;
         for (const key of ["temperature", "topP", "topK", "minP", "repetitionPenalty",
-          "presencePenalty", "penaltyWindow", "frequencyPenalty", "maxTokens", "systemPrompt"]) {
+          "presencePenalty", "penaltyWindow", "frequencyPenalty", "maxTokens", "systemPrompt",
+          "imageMaxEdge"]) {
           els[key].value = settings[key];
         }
         els.enableThinking.checked = settings.enableThinking;
@@ -894,6 +1128,31 @@
         }
       }
 
+      function imageNode(ref) {
+        const holder = document.createElement("div");
+        const show = (dataUrl) => {
+          if (!dataUrl) {
+            holder.className = "image-missing";
+            holder.textContent = `Image no longer stored in this browser: ${ref.name || "image"}`;
+            return;
+          }
+          const img = document.createElement("img");
+          img.src = dataUrl;
+          img.alt = ref.name || "Attached image";
+          img.title = `${ref.name || "image"} · ${ref.width}×${ref.height}`;
+          if (ref.width && ref.height) {
+            img.width = ref.width;
+            img.height = ref.height;
+            img.style.height = "auto";
+          }
+          img.addEventListener("click", () => img.classList.toggle("expanded"));
+          holder.replaceChildren(img);
+        };
+        if (imageCache.has(ref.id)) show(imageCache.get(ref.id));
+        else getImage(ref.id).then(show);
+        return holder;
+      }
+
       function renderMessages() {
         const chat = activeChat();
         els.messages.innerHTML = "";
@@ -903,7 +1162,7 @@
           els.messages.innerHTML = `
             <div class="empty">
               <h1>What can I help with?</h1>
-              <p>Running locally with Prism's Bonsai 2 runtime.</p>
+              <p>Running locally with Prism's Bonsai 2 runtime. Attach, paste or drop images to ask about them.</p>
               <div class="suggestions">
                 <button class="suggestion">Explain how ternary 2-bit weights work.</button>
                 <button class="suggestion">Write a Python function and explain it.</button>
@@ -933,10 +1192,21 @@
           item.dataset.messageId = message.id;
 
           if (message.role === "user") {
-            const bubble = document.createElement("div");
-            bubble.className = "bubble-user";
-            bubble.textContent = message.content;
-            item.appendChild(bubble);
+            const stack = document.createElement("div");
+            stack.className = "user-stack";
+            if (message.images && message.images.length) {
+              const gallery = document.createElement("div");
+              gallery.className = "user-images";
+              for (const ref of message.images) gallery.appendChild(imageNode(ref));
+              stack.appendChild(gallery);
+            }
+            if (message.content) {
+              const bubble = document.createElement("div");
+              bubble.className = "bubble-user";
+              bubble.textContent = message.content;
+              stack.appendChild(bubble);
+            }
+            item.appendChild(stack);
           } else if (message.role === "assistant") {
             const row = document.createElement("div");
             row.className = "assistant-row";
@@ -988,6 +1258,7 @@
                 if (s.generation_tps != null) pieces.push(`${s.generation_tps} tok/s`);
                 if (s.generation_tokens != null) pieces.push(`${s.generation_tokens} tokens`);
                 if (s.prompt_tokens != null) pieces.push(`${s.prompt_tokens} prompt tokens`);
+                if (s.images) pieces.push(`${s.images} image${s.images === 1 ? "" : "s"}`);
                 if (s.peak_memory_gb != null) pieces.push(`${s.peak_memory_gb} GB peak`);
                 if (s.finish_reason) pieces.push(`Finish: ${s.finish_reason}`);
                 stats.textContent = pieces.join(" · ");
@@ -1035,6 +1306,9 @@
 
       function deleteChat(id) {
         if (generating) return;
+        const removed = state.chats.find(c => c.id === id);
+        deleteImages((removed ? removed.messages : [])
+          .flatMap(m => (m.images || []).map(ref => ref.id)));
         state.chats = state.chats.filter(c => c.id !== id);
         if (!state.chats.length) {
           const chat = { id: uid(), title: "New chat", messages: [], createdAt: Date.now() };
@@ -1056,6 +1330,7 @@
         els.sendBtn.textContent = value ? "■" : "↑";
         els.sendBtn.setAttribute("aria-label", value ? "Stop generation" : "Send message");
         els.prompt.disabled = value;
+        els.attachBtn.disabled = value;
         els.composerHint.textContent = value
           ? "Generating locally…"
           : "Enter to send · Shift+Enter for newline";
@@ -1067,7 +1342,7 @@
           els.sendBtn.disabled = stopRequested;
           return;
         }
-        els.sendBtn.disabled = !modelReady || !els.prompt.value.trim();
+        els.sendBtn.disabled = !modelReady || !(els.prompt.value.trim() || pendingImages.length);
       }
 
       function autoResize() {
@@ -1128,20 +1403,46 @@
         }
 
         const text = els.prompt.value.trim();
-        if (!text || !modelReady) return;
+        if ((!text && !pendingImages.length) || !modelReady) return;
 
         setError("");
         saveSettings();
 
         const chat = activeChat();
-        chat.messages.push({ role: "user", content: text });
+        const attached = pendingImages;
+        pendingImages = [];
+        els.prompt.value = "";
+        renderAttachments();
+        autoResize();
+        // Lock the composer before the first await so a second Enter cannot send twice.
+        setGenerating(true);
+        await Promise.all(attached.map(image => putImage(image.id, image.dataUrl)));
+        const userMessage = { role: "user", content: text };
+        if (attached.length) {
+          userMessage.images = attached.map(({ id, name, width, height }) => ({ id, name, width, height }));
+        }
+        chat.messages.push(userMessage);
         if (chat.messages.filter(m => m.role === "user").length === 1) {
-          chat.title = titleFrom(text);
+          chat.title = titleFrom(text || (attached.length ? `Image: ${attached[0].name}` : ""));
         }
 
-        const payloadMessages = chat.messages
-          .filter(m => (m.role === "user" || m.role === "assistant") && !m.exclude_from_context)
-          .map(m => ({ role: m.role, content: m.content }));
+        // Newest images win when the conversation holds more than the request limit.
+        const contextMessages = chat.messages
+          .filter(m => (m.role === "user" || m.role === "assistant") && !m.exclude_from_context);
+        const payloadMessages = contextMessages.map(m => ({ role: m.role, content: m.content }));
+        let imageBudget = MAX_IMAGES_PER_REQUEST;
+        let imagesNotSent = 0;
+        for (let i = contextMessages.length - 1; i >= 0; i--) {
+          const refs = contextMessages[i].images || [];
+          if (!refs.length) continue;
+          const dataUrls = [];
+          for (const ref of refs) {
+            const dataUrl = dataUrls.length < imageBudget ? await getImage(ref.id) : null;
+            if (dataUrl) dataUrls.push(dataUrl); else imagesNotSent++;
+          }
+          imageBudget -= dataUrls.length;
+          if (dataUrls.length) payloadMessages[i].images = dataUrls;
+        }
 
         const assistant = {
           id: uid(),
@@ -1153,11 +1454,8 @@
         };
         chat.messages.push(assistant);
 
-        els.prompt.value = "";
-        autoResize();
         saveState();
         render();
-        setGenerating(true);
 
         controller = new AbortController();
         activeRequestId = uid();
@@ -1218,6 +1516,10 @@
               } else if (event.type === "done") {
                 assistant.stats = event.stats || null;
                 assistant.notice = event.notice || null;
+                if (imagesNotSent) {
+                  assistant.notice = [assistant.notice, `${imagesNotSent} earlier image${imagesNotSent === 1 ? " was" : "s were"} not sent to the model (limit ${MAX_IMAGES_PER_REQUEST} per request, or no longer stored in this browser).`]
+                    .filter(Boolean).join(" ");
+                }
                 assistant.exclude_from_context = event.exclude_from_context === true;
                 assistant.generation_settings = event.settings || null;
                 sawDone = true;
@@ -1276,6 +1578,28 @@
           sendMessage();
         }
       });
+      els.attachBtn.addEventListener("click", () => els.imageInput.click());
+      els.imageInput.addEventListener("change", () => {
+        addFiles(els.imageInput.files);
+        els.imageInput.value = "";
+      });
+      els.prompt.addEventListener("paste", (event) => {
+        const files = Array.from(event.clipboardData?.files || []).filter(f => f.type.startsWith("image/"));
+        if (!files.length) return;
+        event.preventDefault();
+        addFiles(files);
+      });
+      els.composer.addEventListener("dragover", (event) => {
+        if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+        event.preventDefault();
+        els.composer.classList.add("dragover");
+      });
+      els.composer.addEventListener("dragleave", () => els.composer.classList.remove("dragover"));
+      els.composer.addEventListener("drop", (event) => {
+        event.preventDefault();
+        els.composer.classList.remove("dragover");
+        addFiles(event.dataTransfer?.files);
+      });
       els.sendBtn.addEventListener("click", sendMessage);
       els.newChatBtn.addEventListener("click", newChat);
       els.sidebarBtn.addEventListener("click", () => els.sidebar.classList.toggle("open"));
@@ -1305,6 +1629,7 @@
       }
       els.maxTokens.addEventListener("change", saveSettings);
       els.systemPrompt.addEventListener("change", saveSettings);
+      els.imageMaxEdge.addEventListener("change", saveSettings);
 
       render();
       autoResize();
