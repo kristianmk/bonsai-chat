@@ -1,0 +1,1316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bonsai Chat</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #212121;
+      --sidebar: #171717;
+      --surface: #2f2f2f;
+      --surface-hover: #3a3a3a;
+      --text: #ececec;
+      --muted: #a7a7a7;
+      --border: #3b3b3b;
+      --accent: #10a37f;
+      --danger: #ef6262;
+      --user: #303030;
+      --code: #0d0d0d;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body {
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+    }
+    button, textarea, input { font: inherit; }
+    button { color: inherit; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid #252525;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .new-chat {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: transparent;
+      text-align: left;
+      padding: 0 14px;
+      cursor: pointer;
+    }
+    .new-chat:hover { background: #232323; }
+    .chat-list { margin-top: 12px; overflow-y: auto; flex: 1; }
+    .chat-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      border: 0;
+      background: transparent;
+      border-radius: 8px;
+      padding: 10px 10px;
+      cursor: pointer;
+      text-align: left;
+      color: #d8d8d8;
+    }
+    .chat-row:hover, .chat-row.active { background: #252525; }
+    .chat-title {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+    .delete-chat {
+      opacity: 0;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 3px 5px;
+      border-radius: 6px;
+    }
+    .chat-row:hover .delete-chat, .chat-row.active .delete-chat { opacity: 1; }
+    .sidebar-footer {
+      border-top: 1px solid #282828;
+      padding-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .main { min-width: 0; display: flex; flex-direction: column; min-height: 100vh; }
+    .topbar {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid transparent;
+      position: sticky;
+      top: 0;
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+      backdrop-filter: blur(8px);
+      z-index: 5;
+    }
+    .model-info { min-width: 0; display: flex; align-items: center; gap: 10px; }
+    .model-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 999px; background: #777; }
+    .status.ready .status-dot { background: #31c48d; }
+    .status.loading .status-dot { background: #f6c85f; animation: pulse 1.2s infinite; }
+    .status.error .status-dot { background: var(--danger); }
+    @keyframes pulse { 50% { opacity: .35; } }
+    .icon-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 9px;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      font-size: 20px;
+    }
+    .icon-btn:hover { background: var(--surface); }
+    .content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    .messages {
+      width: min(820px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 22px 0 190px;
+    }
+    .empty {
+      margin: min(16vh, 140px) auto 0;
+      max-width: 650px;
+      text-align: center;
+    }
+    .empty h1 { font-size: clamp(28px, 4vw, 42px); margin: 0 0 12px; letter-spacing: -0.03em; }
+    .empty p { color: var(--muted); margin: 0 0 28px; }
+    .suggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; text-align: left; }
+    .suggestion {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: transparent;
+      padding: 14px;
+      min-height: 70px;
+      color: #d9d9d9;
+      cursor: pointer;
+    }
+    .suggestion:hover { background: #282828; }
+    .message { margin: 0 0 26px; }
+    .message.user { display: flex; justify-content: flex-end; }
+    .bubble-user {
+      max-width: min(75%, 620px);
+      background: var(--user);
+      border-radius: 18px;
+      padding: 10px 15px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.55;
+    }
+    .assistant-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 13px; align-items: start; }
+    .avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #0b7d60, #15b88e);
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      font-weight: 800;
+      color: white;
+    }
+    .assistant-content {
+      line-height: 1.67;
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+    .assistant-content.raw-output { white-space: pre-wrap; }
+    .assistant-content p { margin: 0 0 1em; }
+    .assistant-content p:last-child { margin-bottom: 0; }
+    .assistant-content h1,
+    .assistant-content h2,
+    .assistant-content h3,
+    .assistant-content h4,
+    .assistant-content h5,
+    .assistant-content h6 {
+      line-height: 1.3;
+      margin: 1.25em 0 .55em;
+      letter-spacing: -.012em;
+    }
+    .assistant-content h1 { font-size: 1.55em; }
+    .assistant-content h2 { font-size: 1.35em; }
+    .assistant-content h3 { font-size: 1.17em; }
+    .assistant-content ul,
+    .assistant-content ol { padding-left: 1.55em; margin: .6em 0 1em; }
+    .assistant-content li { margin: .28em 0; }
+    .assistant-content blockquote {
+      margin: 1em 0;
+      padding: .15em 0 .15em 1em;
+      border-left: 3px solid #555;
+      color: #c8c8c8;
+    }
+    .assistant-content hr {
+      border: 0;
+      border-top: 1px solid var(--border);
+      margin: 1.5em 0;
+    }
+    .assistant-content pre {
+      overflow-x: auto;
+      background: var(--code);
+      border: 1px solid #303030;
+      border-radius: 10px;
+      padding: 13px;
+      margin: 12px 0;
+      white-space: pre;
+    }
+    .assistant-content code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+    .assistant-content :not(pre) > code {
+      background: #303030;
+      padding: 2px 5px;
+      border-radius: 5px;
+    }
+
+    .assistant-content .code-listing {
+      margin: 14px 0;
+      border: 1px solid #353535;
+      border-radius: 11px;
+      overflow: hidden;
+      background: #0d0d0d;
+    }
+    .assistant-content .code-toolbar {
+      min-height: 38px;
+      padding: 6px 8px 6px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #303030;
+    }
+    .assistant-content .code-language {
+      color: #aaa;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .01em;
+    }
+    .assistant-content .copy-code {
+      border: 0;
+      background: transparent;
+      color: #aaa;
+      border-radius: 7px;
+      min-height: 28px;
+      padding: 4px 8px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .assistant-content .copy-code:hover {
+      background: #2a2a2a;
+      color: #e3e3e3;
+    }
+    .assistant-content .copy-code.copied {
+      color: #72d6b4;
+    }
+    .assistant-content .code-listing pre {
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      padding: 14px 16px;
+      background: #0d0d0d;
+      overflow-x: auto;
+      white-space: pre;
+      tab-size: 4;
+      line-height: 1.52;
+    }
+    .assistant-content .code-listing pre code {
+      display: block;
+      min-width: max-content;
+      background: transparent;
+      padding: 0;
+      font-size: 13px;
+    }
+    .assistant-content table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1em 0;
+      display: block;
+      overflow-x: auto;
+    }
+    .assistant-content th,
+    .assistant-content td {
+      border: 1px solid #484848;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    .assistant-content th { background: #292929; font-weight: 600; }
+    .assistant-content a { color: #7ab7ff; text-decoration: none; }
+    .assistant-content a:hover { text-decoration: underline; }
+    .math-block {
+      width: 100%;
+      overflow-x: auto;
+      padding: .55em .25em;
+      margin: .5em 0 1em;
+      text-align: center;
+    }
+    .math-block math { font-size: 1.08em; margin: 0 auto; }
+    .math-inline math { font-size: 1em; }
+    .math-block-fallback {
+      display: block;
+      overflow-x: auto;
+      white-space: pre;
+      padding: 9px;
+      background: #2d2d2d;
+      border-radius: 7px;
+    }
+    .response-footer {
+      min-height: 30px;
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .copy-response {
+      border: 0;
+      background: transparent;
+      color: #8f8f8f;
+      border-radius: 7px;
+      padding: 5px 7px;
+      cursor: pointer;
+      font-size: 12px;
+      min-height: 30px;
+    }
+    .copy-response:hover { background: #2c2c2c; color: #d7d7d7; }
+    .copy-response.copied { color: #72d6b4; }
+    .stats {
+      color: #777;
+      font-size: 11px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 13px;
+    }
+    .typing::after {
+      content: "●";
+      display: inline-block;
+      margin-left: 3px;
+      animation: blink 1s steps(1) infinite;
+      color: var(--muted);
+      font-size: 10px;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .composer-wrap {
+      position: fixed;
+      left: 260px;
+      right: 0;
+      bottom: 0;
+      padding: 30px 16px 18px;
+      background: linear-gradient(to bottom, transparent, var(--bg) 34%);
+      z-index: 10;
+    }
+    .composer {
+      width: min(820px, 100%);
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid #3b3b3b;
+      border-radius: 24px;
+      padding: 12px 12px 10px 16px;
+      box-shadow: 0 6px 20px rgba(0,0,0,.16);
+    }
+    textarea {
+      width: 100%;
+      min-height: 30px;
+      max-height: 180px;
+      resize: none;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+      line-height: 1.5;
+      padding: 1px 0 8px;
+    }
+    textarea::placeholder { color: #969696; }
+    .composer-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .hint { color: #8e8e8e; font-size: 11px; }
+    .send {
+      width: 38px;
+      height: 38px;
+      border: 0;
+      border-radius: 999px;
+      background: #fff;
+      color: #111;
+      cursor: pointer;
+      font-size: 18px;
+      font-weight: 800;
+    }
+    .send:disabled { background: #777; color: #444; cursor: not-allowed; }
+    .send.stop { background: #fff; font-size: 13px; }
+    .settings {
+      position: fixed;
+      top: 54px;
+      right: 14px;
+      width: min(360px, calc(100% - 28px));
+      background: #292929;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.35);
+      z-index: 30;
+      display: none;
+    }
+    .settings { max-height: calc(100dvh - 76px); overflow-y: auto; }
+    .settings.open { display: block; }
+    .field select {
+      width: 100%; border: 1px solid #494949; background: #1f1f1f;
+      border-radius: 8px; color: var(--text); padding: 9px; font: inherit;
+    }
+    .field .check-label { justify-content: flex-start; align-items: center; }
+    .field .check-label input { accent-color: var(--accent); }
+    .field-help, .runtime-info { color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .message-notice {
+      margin: 12px 0; border-left: 3px solid #bb9444; padding: 8px 12px;
+      color: #dec48e; background: #332e23; border-radius: 4px; font-size: 12px;
+    }
+    .advanced-controls { border-top: 1px solid var(--border); padding-top: 10px; }
+    .advanced-controls summary { cursor: pointer; margin-bottom: 12px; font-size: 12px; }
+
+    .settings h2 { font-size: 15px; margin: 0 0 14px; }
+    .field { margin-bottom: 14px; }
+    .field label { display: flex; justify-content: space-between; gap: 12px; color: #d5d5d5; font-size: 12px; margin-bottom: 7px; }
+    .field input[type="range"] { width: 100%; accent-color: var(--accent); }
+    .field input[type="number"], .field textarea {
+      width: 100%;
+      border: 1px solid #494949;
+      background: #1f1f1f;
+      border-radius: 8px;
+      color: var(--text);
+      padding: 9px;
+      outline: none;
+      font-size: 13px;
+      max-height: 110px;
+    }
+    .field input:focus, .field textarea:focus { border-color: #737373; }
+    .error-banner {
+      width: min(820px, calc(100% - 32px));
+      margin: 12px auto 0;
+      background: rgba(239, 98, 98, .09);
+      border: 1px solid rgba(239, 98, 98, .35);
+      color: #f4b3b3;
+      border-radius: 10px;
+      padding: 10px 12px;
+      display: none;
+      font-size: 13px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .error-banner.show { display: block; }
+    .mobile-sidebar-btn { display: none; }
+    @media (max-width: 760px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar {
+        display: none;
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: min(86vw, 300px);
+        z-index: 50;
+        box-shadow: 12px 0 30px rgba(0,0,0,.35);
+      }
+      .sidebar.open { display: flex; }
+      .mobile-sidebar-btn { display: inline-grid; place-items: center; }
+      .composer-wrap { left: 0; }
+      .messages { width: min(100% - 24px, 820px); }
+      .suggestions { grid-template-columns: 1fr; }
+      .bubble-user { max-width: 88%; }
+      .model-name { max-width: 55vw; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <button class="new-chat" id="newChatBtn">＋ New chat</button>
+      <div class="chat-list" id="chatList"></div>
+      <div class="sidebar-footer">
+        Local model<br>
+        <strong>{{ model_name }}</strong>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="model-info">
+          <button class="icon-btn mobile-sidebar-btn" id="sidebarBtn" aria-label="Open sidebar">☰</button>
+          <div>
+            <div class="model-name">Bonsai 2 27B</div>
+            <div class="status loading" id="status">
+              <span class="status-dot"></span>
+              <span id="statusText">Loading model…</span>
+            </div>
+          </div>
+        </div>
+        <button class="icon-btn" id="settingsBtn" aria-label="Generation settings">⚙</button>
+      </header>
+
+      <div class="error-banner" id="errorBanner"></div>
+
+      <section class="content">
+        <div class="messages" id="messages"></div>
+      </section>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <textarea id="prompt" rows="1" placeholder="Message Bonsai…" aria-label="Message"></textarea>
+          <div class="composer-actions">
+            <span class="hint" id="composerHint">Enter to send · Shift+Enter for newline</span>
+            <button class="send" id="sendBtn" aria-label="Send message">↑</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <section class="settings" id="settingsPanel" aria-label="Generation settings">
+    <h2>Generation settings</h2>
+    <div class="field">
+      <label for="samplingPreset">Sampling profile</label>
+      <select id="samplingPreset">
+        <option value="instruct">Bonsai Instruct</option>
+        <option value="code">Code: mild repetition penalty (trial)</option>
+        <option value="thinking">Bonsai Thinking</option>
+        <option value="custom">Custom</option>
+      </select>
+      <p class="field-help">Instruct / Thinking use Prism's sampling values. Code is an experimental alternative, not a guaranteed fix.</p>
+    </div>
+
+    <div class="field">
+      <label for="temperature">
+        <span>Temperature</span>
+        <span id="temperatureValue">0.7</span>
+      </label>
+      <input id="temperature" type="range" min="0" max="2" step="0.1" value="0.7">
+    </div>
+
+    <div class="field">
+      <label for="topP">
+        <span>Top-p</span>
+        <span id="topPValue">0.95</span>
+      </label>
+      <input id="topP" type="range" min="0.05" max="1" step="0.05" value="0.95">
+    </div>
+
+    <div class="field">
+      <label for="topK">Top-k (0 = off)</label>
+      <input id="topK" type="number" min="0" max="1000" step="1" value="20">
+    </div>
+    <div class="field">
+      <label for="repetitionPenalty"><span>Repetition penalty</span><span id="repetitionPenaltyValue">1.00</span></label>
+      <input id="repetitionPenalty" type="range" min="1" max="1.3" step="0.01" value="1">
+      <p class="field-help">1.00 = off. Try 1.05 for code, then 1.10 if needed. Strong penalties can also suppress necessary repeated code tokens.</p>
+    </div>
+    <div class="field">
+      <label for="presencePenalty"><span>Presence penalty</span><span id="presencePenaltyValue">1.5</span></label>
+      <input id="presencePenalty" type="range" min="0" max="2" step="0.1" value="1.5">
+    </div>
+    <div class="field">
+      <label for="penaltyWindow">Penalty window (tokens)</label>
+      <input id="penaltyWindow" type="number" min="32" max="4096" step="32" value="256">
+      <p class="field-help">A recent-token window, not the model's conversation context limit.</p>
+    </div>
+    <div class="field">
+      <label class="check-label"><input id="enableThinking" type="checkbox"> Enable thinking in the chat template</label>
+      <label class="check-label"><input id="loopGuard" type="checkbox" checked> Stop repeated text automatically</label>
+      <p class="field-help">Stops substantial exact repetitions, not isolated braces or keywords. Turn off for deliberately repeated long blocks.</p>
+    </div>
+    <details class="advanced-controls">
+      <summary>Additional sampling controls</summary>
+      <div class="field">
+        <label for="minP">Min-p (0 = off)</label>
+        <input id="minP" type="number" min="0" max="1" step="0.01" value="0">
+      </div>
+      <div class="field">
+        <label for="frequencyPenalty">Frequency penalty (0 = off)</label>
+        <input id="frequencyPenalty" type="number" min="0" max="2" step="0.05" value="0">
+      </div>
+    </details>
+    <div class="field">
+      <label for="maxTokens"><span>Max new tokens</span></label>
+      <input id="maxTokens" type="number" min="1" max="8192" step="1" value="2048">
+    </div>
+
+    <div class="field">
+      <label for="systemPrompt"><span>System prompt</span></label>
+      <textarea id="systemPrompt" rows="3" placeholder="Optional system instruction"></textarea>
+    </div>
+    <p id="runtimeInfo" class="runtime-info" role="status"></p>
+  </section>
+
+  <script>
+    (() => {
+      const STORAGE_KEY = "bonsai-chat-v1";
+      const SETTINGS_KEY = "bonsai-chat-settings-v2";
+      const DEFAULT_SETTINGS = {
+        preset: "instruct", temperature: 0.7, topP: 0.8, topK: 20,
+        minP: 0, repetitionPenalty: 1.0, penaltyWindow: 256,
+        presencePenalty: 1.5, frequencyPenalty: 0,
+        enableThinking: false, loopGuard: true,
+        maxTokens: 2048, systemPrompt: "",
+      };
+      const PRESETS = {
+        instruct: { temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
+          presencePenalty: 1.5, repetitionPenalty: 1.0, frequencyPenalty: 0,
+          enableThinking: false, loopGuard: true, penaltyWindow: 256 },
+        code: { temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
+          presencePenalty: 0, repetitionPenalty: 1.05, frequencyPenalty: 0,
+          enableThinking: false, loopGuard: true, penaltyWindow: 256 },
+        thinking: { temperature: 1.0, topP: 0.95, topK: 20, minP: 0,
+          presencePenalty: 0, repetitionPenalty: 1.0, frequencyPenalty: 0,
+          enableThinking: true, loopGuard: true, penaltyWindow: 256 },
+      };
+
+      const els = {
+        sidebar: document.getElementById("sidebar"),
+        sidebarBtn: document.getElementById("sidebarBtn"),
+        newChatBtn: document.getElementById("newChatBtn"),
+        chatList: document.getElementById("chatList"),
+        messages: document.getElementById("messages"),
+        prompt: document.getElementById("prompt"),
+        sendBtn: document.getElementById("sendBtn"),
+        composerHint: document.getElementById("composerHint"),
+        status: document.getElementById("status"),
+        statusText: document.getElementById("statusText"),
+        errorBanner: document.getElementById("errorBanner"),
+        settingsBtn: document.getElementById("settingsBtn"),
+        settingsPanel: document.getElementById("settingsPanel"),
+        temperature: document.getElementById("temperature"),
+        temperatureValue: document.getElementById("temperatureValue"),
+        topP: document.getElementById("topP"),
+        topPValue: document.getElementById("topPValue"),
+        maxTokens: document.getElementById("maxTokens"),
+        systemPrompt: document.getElementById("systemPrompt"),
+        samplingPreset: document.getElementById("samplingPreset"),
+        topK: document.getElementById("topK"),
+        minP: document.getElementById("minP"),
+        repetitionPenalty: document.getElementById("repetitionPenalty"),
+        repetitionPenaltyValue: document.getElementById("repetitionPenaltyValue"),
+        penaltyWindow: document.getElementById("penaltyWindow"),
+        presencePenalty: document.getElementById("presencePenalty"),
+        presencePenaltyValue: document.getElementById("presencePenaltyValue"),
+        frequencyPenalty: document.getElementById("frequencyPenalty"),
+        enableThinking: document.getElementById("enableThinking"),
+        loopGuard: document.getElementById("loopGuard"),
+        runtimeInfo: document.getElementById("runtimeInfo"),
+      };
+
+      let state = loadState();
+      let settings = loadSettings();
+      let generating = false;
+      let controller = null;
+      let modelReady = false;
+      let activeRequestId = null;
+      let stopRequested = false;
+
+      function uid() {
+        return (crypto.randomUUID && crypto.randomUUID()) ||
+          `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      function loadState() {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY));
+          if (parsed && Array.isArray(parsed.chats) && parsed.chats.length) {
+            for (const chat of parsed.chats) {
+              for (const message of chat.messages || []) {
+                if (message.streaming) {
+                  message.streaming = false;
+                  message.exclude_from_context = true;
+                  message.notice = "Interrupted response. Excluded from future prompts.";
+                }
+              }
+            }
+            return parsed;
+          }
+        } catch (_) {}
+        const first = { id: uid(), title: "New chat", messages: [], createdAt: Date.now() };
+        return { chats: [first], activeId: first.id };
+      }
+
+      function loadSettings() {
+        try {
+          const current = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+          if (current && typeof current === "object") return { ...DEFAULT_SETTINGS, ...current };
+          // Migrate only the optional system prompt. Keep chats and old settings
+          // intact, but start the new controls from a coherent sampling profile.
+          const old = JSON.parse(localStorage.getItem("bonsai-chat-settings-v1"));
+          return { ...DEFAULT_SETTINGS, systemPrompt: typeof old?.systemPrompt === "string" ? old.systemPrompt : "" };
+        } catch (_) {
+          return { ...DEFAULT_SETTINGS };
+        }
+      }
+
+      function saveState() {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        } catch (_) {
+          setError("Browser storage is full or unavailable. This chat is still visible but may not survive a reload.");
+        }
+      }
+
+      function saveSettings() {
+        settings = {
+          preset: els.samplingPreset.value,
+          temperature: Number(els.temperature.value),
+          topP: Number(els.topP.value),
+          topK: Number(els.topK.value),
+          minP: Number(els.minP.value),
+          repetitionPenalty: Number(els.repetitionPenalty.value),
+          presencePenalty: Number(els.presencePenalty.value),
+          penaltyWindow: Number(els.penaltyWindow.value),
+          frequencyPenalty: Number(els.frequencyPenalty.value),
+          enableThinking: els.enableThinking.checked,
+          loopGuard: els.loopGuard.checked,
+          maxTokens: Number(els.maxTokens.value),
+          systemPrompt: els.systemPrompt.value,
+        };
+        try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {}
+      }
+
+      function updateSettingLabels() {
+        els.temperatureValue.textContent = Number(els.temperature.value).toFixed(1);
+        els.topPValue.textContent = Number(els.topP.value).toFixed(2);
+        els.repetitionPenaltyValue.textContent = Number(els.repetitionPenalty.value).toFixed(2);
+        els.presencePenaltyValue.textContent = Number(els.presencePenalty.value).toFixed(1);
+      }
+
+      function showSettings() {
+        els.samplingPreset.value = settings.preset;
+        for (const key of ["temperature", "topP", "topK", "minP", "repetitionPenalty",
+          "presencePenalty", "penaltyWindow", "frequencyPenalty", "maxTokens", "systemPrompt"]) {
+          els[key].value = settings[key];
+        }
+        els.enableThinking.checked = settings.enableThinking;
+        els.loopGuard.checked = settings.loopGuard;
+        updateSettingLabels();
+      }
+
+      function activeChat() {
+        let chat = state.chats.find(c => c.id === state.activeId);
+        if (!chat) {
+          chat = { id: uid(), title: "New chat", messages: [], createdAt: Date.now() };
+          state.chats.unshift(chat);
+          state.activeId = chat.id;
+        }
+        return chat;
+      }
+
+      function titleFrom(text) {
+        const clean = text.replace(/\s+/g, " ").trim();
+        return clean.length > 34 ? clean.slice(0, 34) + "…" : clean || "New chat";
+      }
+
+      function escapeHtml(text) {
+        return text
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      const renderInFlight = new Set();
+
+      function ensureMessageId(message) {
+        if (!message.id) message.id = uid();
+        return message.id;
+      }
+
+      async function requestRenderedHtml(text) {
+        const response = await fetch("/api/render", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || `Render failed with HTTP ${response.status}`);
+        }
+        return data.html || "";
+      }
+
+      async function copyResponse(text, button) {
+        let copied = false;
+
+        if (navigator.clipboard && window.isSecureContext) {
+          try {
+            await navigator.clipboard.writeText(text);
+            copied = true;
+          } catch (_) {}
+        }
+
+        if (!copied) {
+          const area = document.createElement("textarea");
+          area.value = text;
+          area.setAttribute("readonly", "");
+          area.style.position = "fixed";
+          area.style.opacity = "0";
+          area.style.pointerEvents = "none";
+          document.body.appendChild(area);
+          area.select();
+          copied = document.execCommand("copy");
+          area.remove();
+        }
+
+        if (!copied) {
+          setError("Could not access the clipboard. Select the response text and copy it manually.");
+          return;
+        }
+
+        const oldText = button.textContent;
+        button.textContent = "✓ Copied";
+        button.classList.add("copied");
+        setTimeout(() => {
+          button.textContent = oldText;
+          button.classList.remove("copied");
+        }, 1400);
+      }
+
+      function updateStreamingAssistant(message) {
+        const node = document.querySelector(
+          `[data-message-id="${CSS.escape(message.id)}"] .assistant-content`
+        );
+        if (!node) return;
+        node.classList.add("typing", "raw-output");
+        node.textContent = message.content || "";
+      }
+
+      async function hydrateRenderedMessages() {
+        const chat = activeChat();
+
+        for (const message of chat.messages) {
+          if (
+            message.role !== "assistant" ||
+            message.streaming ||
+            !message.content ||
+            message.rendered_html
+          ) {
+            continue;
+          }
+
+          const id = ensureMessageId(message);
+          if (renderInFlight.has(id)) continue;
+          renderInFlight.add(id);
+
+          requestRenderedHtml(message.content)
+            .then((rendered) => {
+              message.rendered_html = rendered;
+              saveState();
+              if (activeChat().id === chat.id) renderMessages();
+            })
+            .catch((err) => {
+              console.warn("Could not render assistant response:", err);
+            })
+            .finally(() => {
+              renderInFlight.delete(id);
+            });
+        }
+      }
+
+      function renderSidebar() {
+        els.chatList.innerHTML = "";
+        for (const chat of state.chats) {
+          const row = document.createElement("div");
+          row.className = "chat-row" + (chat.id === state.activeId ? " active" : "");
+          row.tabIndex = 0;
+
+          const title = document.createElement("span");
+          title.className = "chat-title";
+          title.textContent = chat.title || "New chat";
+
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "delete-chat";
+          del.textContent = "×";
+          del.title = "Delete chat";
+          del.addEventListener("click", (event) => {
+            event.stopPropagation();
+            deleteChat(chat.id);
+          });
+
+          row.append(title, del);
+          row.addEventListener("click", () => selectChat(chat.id));
+          row.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") selectChat(chat.id);
+          });
+          els.chatList.appendChild(row);
+        }
+      }
+
+      function renderMessages() {
+        const chat = activeChat();
+        els.messages.innerHTML = "";
+        let assignedIds = false;
+
+        if (!chat.messages.length) {
+          els.messages.innerHTML = `
+            <div class="empty">
+              <h1>What can I help with?</h1>
+              <p>Running locally with Prism's Bonsai 2 runtime.</p>
+              <div class="suggestions">
+                <button class="suggestion">Explain how ternary 2-bit weights work.</button>
+                <button class="suggestion">Write a Python function and explain it.</button>
+                <button class="suggestion">Give me a hard reasoning problem to test this model.</button>
+                <button class="suggestion">Compare MLX and llama.cpp on Apple Silicon.</button>
+              </div>
+            </div>`;
+          els.messages.querySelectorAll(".suggestion").forEach(btn => {
+            btn.addEventListener("click", () => {
+              els.prompt.value = btn.textContent;
+              autoResize();
+              els.prompt.focus();
+            });
+          });
+          return;
+        }
+
+        for (let i = 0; i < chat.messages.length; i++) {
+          const message = chat.messages[i];
+          if (!message.id) {
+            message.id = uid();
+            assignedIds = true;
+          }
+
+          const item = document.createElement("article");
+          item.className = "message " + message.role;
+          item.dataset.messageId = message.id;
+
+          if (message.role === "user") {
+            const bubble = document.createElement("div");
+            bubble.className = "bubble-user";
+            bubble.textContent = message.content;
+            item.appendChild(bubble);
+          } else if (message.role === "assistant") {
+            const row = document.createElement("div");
+            row.className = "assistant-row";
+
+            const avatar = document.createElement("div");
+            avatar.className = "avatar";
+            avatar.textContent = "B";
+
+            const bodyWrap = document.createElement("div");
+            const body = document.createElement("div");
+            body.className = "assistant-content";
+
+            if (message.streaming) {
+              body.classList.add("typing", "raw-output");
+              body.textContent = message.content || "";
+            } else if (message.rendered_html) {
+              body.innerHTML = message.rendered_html;
+            } else {
+              body.classList.add("raw-output");
+              body.textContent = message.content || "";
+            }
+
+            bodyWrap.appendChild(body);
+            if (message.notice) {
+              const notice = document.createElement("div");
+              notice.className = "message-notice";
+              notice.setAttribute("role", "status");
+              notice.textContent = message.notice;
+              bodyWrap.appendChild(notice);
+            }
+
+            if (!message.streaming && message.content) {
+              const footer = document.createElement("div");
+              footer.className = "response-footer";
+
+              const copy = document.createElement("button");
+              copy.type = "button";
+              copy.className = "copy-response";
+              copy.textContent = "⧉ Copy";
+              copy.title = "Copy raw Markdown and LaTeX";
+              copy.addEventListener("click", () => copyResponse(message.content, copy));
+              footer.appendChild(copy);
+
+              if (message.stats) {
+                const stats = document.createElement("div");
+                stats.className = "stats";
+                const s = message.stats;
+                const pieces = [];
+                if (s.generation_tps != null) pieces.push(`${s.generation_tps} tok/s`);
+                if (s.generation_tokens != null) pieces.push(`${s.generation_tokens} tokens`);
+                if (s.prompt_tokens != null) pieces.push(`${s.prompt_tokens} prompt tokens`);
+                if (s.peak_memory_gb != null) pieces.push(`${s.peak_memory_gb} GB peak`);
+                if (s.finish_reason) pieces.push(`Finish: ${s.finish_reason}`);
+                stats.textContent = pieces.join(" · ");
+                footer.appendChild(stats);
+              }
+
+              bodyWrap.appendChild(footer);
+            }
+
+            row.append(avatar, bodyWrap);
+            item.appendChild(row);
+          }
+
+          els.messages.appendChild(item);
+        }
+
+        if (assignedIds) saveState();
+        queueMicrotask(hydrateRenderedMessages);
+      }
+
+      function render() {
+        renderSidebar();
+        renderMessages();
+        requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
+      }
+
+      function selectChat(id) {
+        if (generating) return;
+        state.activeId = id;
+        saveState();
+        render();
+        els.sidebar.classList.remove("open");
+      }
+
+      function newChat() {
+        if (generating) return;
+        const chat = { id: uid(), title: "New chat", messages: [], createdAt: Date.now() };
+        state.chats.unshift(chat);
+        state.activeId = chat.id;
+        saveState();
+        render();
+        els.prompt.focus();
+        els.sidebar.classList.remove("open");
+      }
+
+      function deleteChat(id) {
+        if (generating) return;
+        state.chats = state.chats.filter(c => c.id !== id);
+        if (!state.chats.length) {
+          const chat = { id: uid(), title: "New chat", messages: [], createdAt: Date.now() };
+          state.chats.push(chat);
+        }
+        if (state.activeId === id) state.activeId = state.chats[0].id;
+        saveState();
+        render();
+      }
+
+      function setError(message = "") {
+        els.errorBanner.textContent = message;
+        els.errorBanner.classList.toggle("show", Boolean(message));
+      }
+
+      function setGenerating(value) {
+        generating = value;
+        els.sendBtn.classList.toggle("stop", value);
+        els.sendBtn.textContent = value ? "■" : "↑";
+        els.sendBtn.setAttribute("aria-label", value ? "Stop generation" : "Send message");
+        els.prompt.disabled = value;
+        els.composerHint.textContent = value
+          ? "Generating locally…"
+          : "Enter to send · Shift+Enter for newline";
+        updateSendState();
+      }
+
+      function updateSendState() {
+        if (generating) {
+          els.sendBtn.disabled = stopRequested;
+          return;
+        }
+        els.sendBtn.disabled = !modelReady || !els.prompt.value.trim();
+      }
+
+      function autoResize() {
+        els.prompt.style.height = "auto";
+        els.prompt.style.height = Math.min(180, els.prompt.scrollHeight) + "px";
+        updateSendState();
+      }
+
+      async function pollStatus() {
+        try {
+          const response = await fetch("/api/status", { cache: "no-store" });
+          const data = await response.json();
+
+          els.status.className = "status " + data.state;
+
+          if (data.state === "ready") {
+            modelReady = true;
+            els.statusText.textContent = data.busy ? "Generating…" : "Ready";
+            const supported = new Set(data.sampling_supported || []);
+            const missing = ["top_k", "repetition_penalty", "presence_penalty"]
+              .filter(key => !supported.has(key));
+            els.runtimeInfo.textContent = `mlx-vlm ${data.mlx_vlm_version || "unknown"}. ` +
+              (missing.length ? `Not exposed by this runtime: ${missing.join(", ")}. Unsupported active controls return an error; they are not ignored.` : "Sampling controls available.");
+          } else if (data.state === "loading" || data.state === "idle") {
+            modelReady = false;
+            els.statusText.textContent = data.state === "idle" ? "Starting…" : "Loading model…";
+          } else {
+            modelReady = false;
+            els.statusText.textContent = "Load failed";
+            setError(data.error || "Model failed to load.");
+          }
+          updateSendState();
+        } catch (err) {
+          modelReady = false;
+          els.status.className = "status error";
+          els.statusText.textContent = "Server offline";
+          updateSendState();
+        }
+      }
+
+      async function sendMessage() {
+        if (generating) {
+          if (stopRequested || !activeRequestId) return;
+          stopRequested = true;
+          els.composerHint.textContent = "Stopping after the current MLX step…";
+          els.sendBtn.disabled = true;
+          try {
+            const response = await fetch("/api/stop", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ request_id: activeRequestId }),
+            });
+            if (!response.ok) throw new Error("Stop request failed");
+          } catch (error) {
+            setError("Could not confirm server cancellation. Disconnecting the stream.");
+            if (controller) controller.abort();
+          }
+          return;
+        }
+
+        const text = els.prompt.value.trim();
+        if (!text || !modelReady) return;
+
+        setError("");
+        saveSettings();
+
+        const chat = activeChat();
+        chat.messages.push({ role: "user", content: text });
+        if (chat.messages.filter(m => m.role === "user").length === 1) {
+          chat.title = titleFrom(text);
+        }
+
+        const payloadMessages = chat.messages
+          .filter(m => (m.role === "user" || m.role === "assistant") && !m.exclude_from_context)
+          .map(m => ({ role: m.role, content: m.content }));
+
+        const assistant = {
+          id: uid(),
+          role: "assistant",
+          content: "",
+          streaming: true,
+          stats: null,
+          rendered_html: null,
+        };
+        chat.messages.push(assistant);
+
+        els.prompt.value = "";
+        autoResize();
+        saveState();
+        render();
+        setGenerating(true);
+
+        controller = new AbortController();
+        activeRequestId = uid();
+        stopRequested = false;
+        let sawDone = false;
+
+        try {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({
+              request_id: activeRequestId,
+              messages: payloadMessages,
+              temperature: settings.temperature,
+              top_p: settings.topP,
+              top_k: settings.topK,
+              min_p: settings.minP,
+              repetition_penalty: settings.repetitionPenalty,
+              repetition_context_size: settings.penaltyWindow,
+              presence_penalty: settings.presencePenalty,
+              presence_context_size: settings.penaltyWindow,
+              frequency_penalty: settings.frequencyPenalty,
+              frequency_context_size: settings.penaltyWindow,
+              enable_thinking: settings.enableThinking,
+              loop_guard: settings.loopGuard,
+              max_tokens: settings.maxTokens,
+              system_prompt: settings.systemPrompt,
+            }),
+          });
+
+          if (!response.ok) {
+            const detail = await response.text();
+            throw new Error(`HTTP ${response.status}: ${detail}`);
+          }
+          if (!response.body) throw new Error("Streaming response body is unavailable.");
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              const event = JSON.parse(line);
+
+              if (event.type === "delta") {
+                assistant.content += event.text || "";
+                updateStreamingAssistant(assistant);
+                window.scrollTo({ top: document.body.scrollHeight });
+              } else if (event.type === "done") {
+                assistant.stats = event.stats || null;
+                assistant.notice = event.notice || null;
+                assistant.exclude_from_context = event.exclude_from_context === true;
+                assistant.generation_settings = event.settings || null;
+                sawDone = true;
+              } else if (event.type === "error") {
+                throw new Error(event.error || "Generation failed");
+              }
+            }
+          }
+          if (!sawDone) throw new Error("Stream ended before a completion event. The response may be incomplete.");
+        } catch (err) {
+          assistant.exclude_from_context = true;
+          assistant.notice = "Interrupted or failed response. Excluded from future prompts.";
+          if (err.name === "AbortError") {
+            if (!assistant.content) assistant.content = "(generation stopped)";
+          } else {
+            setError(err.message || String(err));
+            if (!assistant.content) assistant.content = "(generation failed)";
+          }
+        } finally {
+          assistant.streaming = false;
+
+          if (assistant.content) {
+            try {
+              assistant.rendered_html = await requestRenderedHtml(assistant.content);
+            } catch (err) {
+              console.warn("Could not render final response:", err);
+              setError(`Response generated, but formatting failed: ${err.message || err}`);
+            }
+          }
+
+          saveState();
+          render();
+          controller = null;
+          activeRequestId = null;
+          stopRequested = false;
+          setGenerating(false);
+          els.prompt.focus();
+        }
+      }
+
+      els.messages.addEventListener("click", (event) => {
+        const button = event.target.closest(".copy-code");
+        if (!button) return;
+
+        const listing = button.closest(".code-listing");
+        const code = listing ? listing.querySelector("pre code") : null;
+        if (!code) return;
+
+        copyResponse(code.textContent, button);
+      });
+
+      els.prompt.addEventListener("input", autoResize);
+      els.prompt.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          sendMessage();
+        }
+      });
+      els.sendBtn.addEventListener("click", sendMessage);
+      els.newChatBtn.addEventListener("click", newChat);
+      els.sidebarBtn.addEventListener("click", () => els.sidebar.classList.toggle("open"));
+
+      els.settingsBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        els.settingsPanel.classList.toggle("open");
+      });
+      els.settingsPanel.addEventListener("click", event => event.stopPropagation());
+      document.addEventListener("click", () => els.settingsPanel.classList.remove("open"));
+
+      showSettings();
+      els.samplingPreset.addEventListener("change", () => {
+        const preset = PRESETS[els.samplingPreset.value];
+        if (!preset) return;
+        settings = { ...settings, ...preset, preset: els.samplingPreset.value };
+        showSettings();
+        saveSettings();
+      });
+      for (const key of ["temperature", "topP", "topK", "minP", "repetitionPenalty",
+        "presencePenalty", "penaltyWindow", "frequencyPenalty", "enableThinking", "loopGuard"]) {
+        els[key].addEventListener("input", () => {
+          els.samplingPreset.value = "custom";
+          updateSettingLabels();
+          saveSettings();
+        });
+      }
+      els.maxTokens.addEventListener("change", saveSettings);
+      els.systemPrompt.addEventListener("change", saveSettings);
+
+      render();
+      autoResize();
+      pollStatus();
+      setInterval(pollStatus, 1500);
+    })();
+  </script>
+</body>
+</html>
