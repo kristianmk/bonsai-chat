@@ -8,8 +8,9 @@ text and image input, sampling/repetition controls, and an automatic loop guard.
 
 ![Bonsai Chat answering a request to implement quicksort: a highlighted Python listing with its own Copy button, rendered math, and the response statistics line](docs/screenshot-quicksort.svg)
 
-*The interface in use (vector image, so it stays sharp when zoomed). This capture
-comes from the real app in Firefox, but the
+*The interface in use (vector image, so it stays sharp when zoomed; a
+[5120×3896 PNG](docs/screenshot-quicksort.png) of the same capture is also
+available). This capture comes from the real app in Firefox, but the
 reply text is a sample answer streamed through the app with the model's forward
 pass stubbed out: the CPU-only machine it was taken on cannot run the model at a
 usable speed. Rendering, highlighting, math and the token counts (computed with
